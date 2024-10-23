@@ -1562,6 +1562,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "leo-interpreter"
+version = "2.3.0"
+dependencies = [
+ "colored",
+ "indexmap 2.6.0",
+ "leo-ast",
+ "leo-errors",
+ "leo-parser",
+ "leo-passes",
+ "leo-span",
+ "snarkvm",
+ "snarkvm-circuit",
+]
+
+[[package]]
 name = "leo-lang"
 version = "2.3.0"
 dependencies = [
@@ -1577,6 +1592,7 @@ dependencies = [
  "leo-ast",
  "leo-compiler",
  "leo-errors",
+ "leo-interpreter",
  "leo-package",
  "leo-retriever",
  "leo-span",

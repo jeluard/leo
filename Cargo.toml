@@ -38,6 +38,7 @@ members = [
   "compiler/span",
   "docs/grammar",
   "errors",
+  "interpreter",
   "leo/package",
   "tests/test-framework",
   "utils/disassembler",
@@ -58,6 +59,10 @@ version = "2.3.0"
 
 [workspace.dependencies.leo-errors]
 path = "./errors"
+version = "2.3.0"
+
+[workspace.dependencies.leo-interpreter]
+path = "./interpreter"
 version = "2.3.0"
 
 [workspace.dependencies.leo-package]
@@ -84,6 +89,9 @@ version = "2.3.0"
 version = "0.1.24"
 default-features = false
 
+[workspace.dependencies.colored]
+version = "2.0"
+
 [workspace.dependencies.indexmap]
 version = "2.6"
 features = [ "serde" ]
@@ -99,6 +107,7 @@ default-features = false
 version = "1.11.1"
 
 [workspace.dependencies.snarkvm]
+# path = "../SnarkVM"
 version = "1.0.0"
 
 [workspace.dependencies.serde]
@@ -145,6 +154,9 @@ workspace = true
 [dependencies.leo-errors]
 workspace = true
 
+[dependencies.leo-interpreter]
+workspace = true
+
 [dependencies.leo-package]
 workspace = true
 
@@ -165,6 +177,7 @@ version = "4.5"
 features = [ "derive", "env", "color", "unstable-styles" ]
 
 [dependencies.colored]
+workspace = true
 version = "2.0"
 
 [dependencies.dotenvy]

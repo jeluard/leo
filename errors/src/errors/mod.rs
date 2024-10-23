@@ -37,6 +37,9 @@ pub use self::flattener::*;
 pub mod loop_unroller;
 pub use self::loop_unroller::*;
 
+pub mod interpreter_halt;
+pub use self::interpreter_halt::*;
+
 /// Contains the Package error definitions.
 pub mod package;
 pub use self::package::*;
@@ -66,6 +69,8 @@ pub enum LeoError {
     /// Represents a Compiler Error in a Leo Error.
     #[error(transparent)]
     CompilerError(#[from] CompilerError),
+    #[error(transparent)]
+    InterpreterHalt(#[from] InterpreterHalt),
     /// Represents a Package Error in a Leo Error.
     #[error(transparent)]
     PackageError(#[from] PackageError),
@@ -110,6 +115,7 @@ impl LeoError {
             UtilError(error) => error.error_code(),
             LastErrorCode(_) => unreachable!(),
             Anyhow(_) => "SnarkVM Error".to_string(), // todo: implement error codes for snarkvm errors.
+            InterpreterHalt(_) => "Interpreter Halt".to_string(),
         }
     }
 
@@ -129,6 +135,7 @@ impl LeoError {
             UtilError(error) => error.exit_code(),
             LastErrorCode(code) => *code,
             Anyhow(_) => 11000, // todo: implement exit codes for snarkvm errors.
+            InterpreterHalt(_) => 1,
         }
     }
 }
