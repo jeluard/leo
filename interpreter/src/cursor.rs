@@ -15,6 +15,7 @@
 // along with the Leo library. If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
+    cmp::Ordering,
     collections::HashMap,
     fmt,
     hash::{Hash, Hasher},
@@ -134,8 +135,9 @@ impl Hash for StructContents {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub enum Value {
+    #[default]
     Unit,
     Bool(bool),
     U8(u8),
@@ -152,20 +154,13 @@ pub enum Value {
     Field(SvmField),
     Scalar(SvmScalar),
     Array(Vec<Value>),
-    Signature(SvmSignature),
+    Signature(Box<SvmSignature>),
     String(()),
     Tuple(Vec<Value>),
     Address(SvmAddress),
     Record(()),
     Future(()),
     Struct(StructContents),
-    // Function(FunctionId),
-}
-
-impl Default for Value {
-    fn default() -> Self {
-        Value::Unit
-    }
 }
 
 impl fmt::Display for Value {
@@ -493,7 +488,6 @@ impl Value {
 #[derive(Clone, Debug)]
 struct FunctionContext {
     program: Symbol,
-    span: Span,
     names: HashMap<Symbol, Value>,
 }
 
@@ -508,9 +502,9 @@ impl ContextStack {
         self.current_len
     }
 
-    fn push(&mut self, program: Symbol, span: Span) {
+    fn push(&mut self, program: Symbol) {
         if self.current_len == self.contexts.len() {
-            self.contexts.push(FunctionContext { program, names: HashMap::new(), span });
+            self.contexts.push(FunctionContext { program, names: HashMap::new() });
         }
         self.contexts[self.current_len].program = program;
         self.current_len += 1;
@@ -540,13 +534,6 @@ pub enum Element<'a> {
     Statement(&'a Statement),
     Expression(&'a Expression),
     Block { block: &'a Block, function_body: bool },
-    Empty,
-}
-
-impl Default for Element<'_> {
-    fn default() -> Self {
-        Element::Empty
-    }
 }
 
 impl Element<'_> {
@@ -556,12 +543,11 @@ impl Element<'_> {
             Statement(statement) => statement.span(),
             Expression(expression) => expression.span(),
             Block { block, .. } => block.span(),
-            Empty => Default::default(),
         }
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Frame<'a> {
     pub step: usize,
     pub element: Element<'a>,
@@ -578,11 +564,11 @@ pub struct GlobalId {
 pub struct Cursor<'a> {
     pub frames: Vec<Frame<'a>>,
     pub values: Vec<Value>,
-    pub contexts: ContextStack,
     pub functions: HashMap<GlobalId, &'a Function>,
     pub globals: HashMap<GlobalId, Value>,
     pub mappings: HashMap<GlobalId, HashMap<Value, Value>>,
     pub structs: HashMap<GlobalId, IndexSet<Symbol>>,
+    contexts: ContextStack,
 }
 
 impl<'a> Cursor<'a> {
@@ -609,18 +595,18 @@ impl<'a> Cursor<'a> {
         self.globals.get(&GlobalId { program: context.program, name }).cloned()
     }
 
-    fn lookup_mapping(&self, name: Symbol) -> Option<&HashMap<Value, Value>> {
-        let Some(context) = self.contexts.contexts.last() else {
-            panic!("lookup requires a context");
+    fn lookup_mapping(&self, program: Option<Symbol>, name: Symbol) -> Option<&HashMap<Value, Value>> {
+        let Some(program) = program.or(self.contexts.contexts.last().map(|c| c.program)) else {
+            panic!("no program for mapping lookup");
         };
-        self.mappings.get(&GlobalId { program: context.program, name })
+        self.mappings.get(&GlobalId { program, name })
     }
 
-    fn lookup_mapping_mut(&mut self, name: Symbol) -> Option<&mut HashMap<Value, Value>> {
-        let Some(context) = self.contexts.contexts.last() else {
-            panic!("lookup requires a context");
+    fn lookup_mapping_mut(&mut self, program: Option<Symbol>, name: Symbol) -> Option<&mut HashMap<Value, Value>> {
+        let Some(program) = program.or(self.contexts.contexts.last().map(|c| c.program)) else {
+            panic!("no program for mapping lookup");
         };
-        self.mappings.get_mut(&GlobalId { program: context.program, name })
+        self.mappings.get_mut(&GlobalId { program, name })
     }
 
     fn lookup_function(&self, program: Symbol, name: Symbol) -> Option<&'a Function> {
@@ -641,15 +627,22 @@ impl<'a> Cursor<'a> {
     pub fn over(&mut self) -> Result<StepResult> {
         let frames_len = self.frames.len();
         loop {
-            if self.frames.len() > frames_len {
-                self.step()?;
-            } else if self.frames.len() == frames_len {
-                let result = self.step()?;
-                if result.finished {
-                    return Ok(result);
+            match self.frames.len().cmp(&frames_len) {
+                Ordering::Greater => {
+                    self.step()?;
                 }
-            } else {
-                assert!(false);
+                Ordering::Equal => {
+                    let result = self.step()?;
+                    if result.finished {
+                        return Ok(result);
+                    }
+                }
+                Ordering::Less => {
+                    // This can happen if, for instance, a `return` was encountered,
+                    // which means we exited the function we were evaluating and the
+                    // frame stack was truncated.
+                    return Ok(StepResult { finished: true, value: None });
+                }
             }
         }
     }
@@ -747,7 +740,7 @@ impl<'a> Cursor<'a> {
                     }),
                     Value::Bool(false) if conditional.otherwise.is_some() => self.frames.push(Frame {
                         step: 0,
-                        element: Element::Statement(&**conditional.otherwise.as_ref().unwrap()),
+                        element: Element::Statement(conditional.otherwise.as_ref().unwrap()),
                         user_initiated: false,
                     }),
                     _ => tc_fail!(),
@@ -1875,10 +1868,12 @@ impl<'a> Cursor<'a> {
                     ),
                     CoreFunction::MappingGet => {
                         let key = self.values.pop().expect_tc(span)?;
-                        let Expression::Identifier(id) = &function.arguments[0] else {
-                            tc_fail!();
+                        let (program, name) = match &function.arguments[0] {
+                            Expression::Identifier(id) => (None, id.name),
+                            Expression::Locator(locator) => (Some(locator.program.name.name), locator.name),
+                            _ => tc_fail!(),
                         };
-                        match self.lookup_mapping(id.name).and_then(|mapping| mapping.get(&key)) {
+                        match self.lookup_mapping(program, name).and_then(|mapping| mapping.get(&key)) {
                             Some(v) => v.clone(),
                             None => halt!(function.span(), "map lookup failure"),
                         }
@@ -1886,10 +1881,12 @@ impl<'a> Cursor<'a> {
                     CoreFunction::MappingGetOrUse => {
                         let use_value = self.values.pop().expect_tc(span)?;
                         let key = self.values.pop().expect_tc(span)?;
-                        let Expression::Identifier(id) = &function.arguments[0] else {
-                            tc_fail!();
+                        let (program, name) = match &function.arguments[0] {
+                            Expression::Identifier(id) => (None, id.name),
+                            Expression::Locator(locator) => (Some(locator.program.name.name), locator.name),
+                            _ => tc_fail!(),
                         };
-                        match self.lookup_mapping(id.name).and_then(|mapping| mapping.get(&key)) {
+                        match self.lookup_mapping(program, name).and_then(|mapping| mapping.get(&key)) {
                             Some(v) => v.clone(),
                             None => use_value,
                         }
@@ -1897,10 +1894,12 @@ impl<'a> Cursor<'a> {
                     CoreFunction::MappingSet => {
                         let value = self.pop_value()?;
                         let key = self.pop_value()?;
-                        let Expression::Identifier(id) = &function.arguments[0] else {
-                            tc_fail!();
+                        let (program, name) = match &function.arguments[0] {
+                            Expression::Identifier(id) => (None, id.name),
+                            Expression::Locator(locator) => (Some(locator.program.name.name), locator.name),
+                            _ => tc_fail!(),
                         };
-                        if let Some(mapping) = self.lookup_mapping_mut(id.name) {
+                        if let Some(mapping) = self.lookup_mapping_mut(program, name) {
                             mapping.insert(key, value);
                         } else {
                             tc_fail!();
@@ -1909,10 +1908,12 @@ impl<'a> Cursor<'a> {
                     }
                     CoreFunction::MappingRemove => {
                         let key = self.pop_value()?;
-                        let Expression::Identifier(id) = &function.arguments[0] else {
-                            tc_fail!();
+                        let (program, name) = match &function.arguments[0] {
+                            Expression::Identifier(id) => (None, id.name),
+                            Expression::Locator(locator) => (Some(locator.program.name.name), locator.name),
+                            _ => tc_fail!(),
                         };
-                        if let Some(mapping) = self.lookup_mapping_mut(id.name) {
+                        if let Some(mapping) = self.lookup_mapping_mut(program, name) {
                             mapping.remove(&key);
                         } else {
                             tc_fail!();
@@ -1921,10 +1922,12 @@ impl<'a> Cursor<'a> {
                     }
                     CoreFunction::MappingContains => {
                         let key = self.pop_value()?;
-                        let Expression::Identifier(id) = &function.arguments[0] else {
-                            tc_fail!();
+                        let (program, name) = match &function.arguments[0] {
+                            Expression::Identifier(id) => (None, id.name),
+                            Expression::Locator(locator) => (Some(locator.program.name.name), locator.name),
+                            _ => tc_fail!(),
                         };
-                        if let Some(mapping) = self.lookup_mapping_mut(id.name) {
+                        if let Some(mapping) = self.lookup_mapping_mut(program, name) {
                             Value::Bool(mapping.contains_key(&key))
                         } else {
                             tc_fail!();
@@ -1983,7 +1986,7 @@ impl<'a> Cursor<'a> {
                     _ => tc_fail!(),
                 };
                 let function = self.lookup_function(program, name).expect_tc(call.span())?;
-                self.contexts.push(program, function.span());
+                self.contexts.push(program);
                 let param_names = function.input.iter().map(|input| input.identifier.name);
                 let iter = self.values.drain(len - call.arguments.len()..);
                 for (name, value) in param_names.zip(iter) {
@@ -2221,7 +2224,6 @@ impl<'a> Cursor<'a> {
                 };
                 Ok(StepResult { finished, value })
             }
-            Element::Empty => unreachable!(),
         }
     }
 }

@@ -14,15 +14,18 @@
 // You should have received a copy of the GNU General Public License
 // along with the Leo library. If not, see <https://www.gnu.org/licenses/>.
 
-use std::{collections::HashMap, fmt::Display, fs, path::Path};
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use colored::*;
 
 use snarkvm::prelude::TestnetV0;
 
 use leo_ast::{Ast, Node as _, NodeBuilder};
-
-use leo_passes::{Pass as _, SymbolTableCreator, TypeChecker, TypeTable};
 
 use leo_span::{Span, source_map::FileName, symbol::with_session_globals};
 
@@ -38,6 +41,7 @@ pub struct Interpreter {
     handler: Handler,
     node_builder: NodeBuilder,
     breakpoints: Vec<Breakpoint>,
+    filename_to_program: HashMap<PathBuf, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -63,7 +67,7 @@ impl Interpreter {
     }
 
     fn get_ast(path: &Path, handler: &Handler, node_builder: &NodeBuilder) -> Result<Ast> {
-        let text = fs::read_to_string(path).map_err(|e| CompilerError::file_read_error(&path, e))?;
+        let text = fs::read_to_string(path).map_err(|e| CompilerError::file_read_error(path, e))?;
         let filename = FileName::Real(path.to_path_buf());
         let source_file = with_session_globals(|s| s.source_map.new_source(&text, filename));
         leo_parser::parse_ast::<TestnetV0>(handler, node_builder, &text, source_file.start_pos)
@@ -73,21 +77,13 @@ impl Interpreter {
         let handler = Handler::default();
         let node_builder = Default::default();
         let mut cursor: Cursor<'_> = Cursor::default();
+        let mut filename_to_program = HashMap::new();
         for path in source_files {
             let ast = Self::get_ast(path, &handler, &node_builder)?;
-            let symbol_table = SymbolTableCreator::do_pass((&ast, &handler))?;
-            let type_table = TypeTable::default();
-            TypeChecker::<TestnetV0>::do_pass((
-                &ast,
-                &handler,
-                symbol_table,
-                &type_table,
-                10,    // conditional_block_max_depth
-                false, // disable_conditional_branch_type_checking
-            ))?;
             // TODO: This leak is silly.
             let ast = Box::leak(Box::new(ast));
             for (&program, scope) in ast.ast.program_scopes.iter() {
+                filename_to_program.insert(path.to_path_buf(), program.to_string());
                 for (name, function) in scope.functions.iter() {
                     cursor.functions.insert(GlobalId { program, name: *name }, function);
                 }
@@ -99,7 +95,7 @@ impl Interpreter {
                     );
                 }
 
-                for (name, _mapping) in scope.structs.iter() {
+                for (name, _mapping) in scope.mappings.iter() {
                     cursor.mappings.insert(GlobalId { program, name: *name }, HashMap::new());
                 }
 
@@ -118,7 +114,15 @@ impl Interpreter {
 
         let cursor_initial = cursor.clone();
 
-        Ok(Interpreter { cursor, cursor_initial, handler, node_builder, actions: Vec::new(), breakpoints: Vec::new() })
+        Ok(Interpreter {
+            cursor,
+            cursor_initial,
+            handler,
+            node_builder,
+            actions: Vec::new(),
+            breakpoints: Vec::new(),
+            filename_to_program,
+        })
     }
 
     fn action(&mut self, act: InterpreterAction) -> Result<Option<Value>> {
@@ -166,6 +170,11 @@ impl Interpreter {
 
             Run => {
                 while !self.cursor.frames.is_empty() {
+                    if let Some((program, line)) = self.current_program_and_line() {
+                        if self.breakpoints.iter().any(|bp| bp.program == program && bp.line == line) {
+                            return Ok(None);
+                        }
+                    }
                     self.cursor.step()?;
                 }
                 StepResult { finished: false, value: None }
@@ -188,7 +197,6 @@ impl Interpreter {
             Element::Statement(statement) => format!("{statement}"),
             Element::Expression(expression) => format!("{expression}"),
             Element::Block { block, .. } => format!("{block}"),
-            Element::Empty => tc_fail!(),
         })
     }
 
@@ -210,6 +218,20 @@ impl Interpreter {
         })
     }
 
+    fn current_program_and_line(&self) -> Option<(String, usize)> {
+        if let Some(span) = self.current_span() {
+            if let Some(location) = with_session_globals(|s| s.source_map.span_to_location(span)) {
+                let line = location.line_start;
+                if let FileName::Real(name) = &location.source_file.name {
+                    if let Some(program) = self.filename_to_program.get(name) {
+                        return Some((program.clone(), line));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn current_span(&self) -> Option<Span> {
         self.cursor.frames.last().map(|f| f.element.span())
     }
@@ -225,6 +247,10 @@ Once a function is running, commands include
 #over    to complete evaluating the current expression or statement;
 #run     to finish evaluating
 #quit    to exit the interpreter.
+
+You can set a breakpoint with
+#break program_name line_number
+
 You may also use one letter abbreviations for these commands, such as #i.
 Finally, you may simply enter expressions or statements on the command line
 to evaluate. For instance, if you want to see the value of a variable w:
@@ -233,7 +259,21 @@ If you want to set w to a new value:
 w = z + 2u8;
 ";
 
-pub fn interpret(filenames: &[String]) -> Result<()> {
+fn parse_breakpoint(s: &str) -> Option<Breakpoint> {
+    let strings: Vec<&str> = s.split_whitespace().collect();
+    if strings.len() == 2 {
+        let mut program = strings[0].to_string();
+        if program.ends_with(".aleo") {
+            program.truncate(program.len() - 5);
+        }
+        if let Ok(line) = strings[1].parse::<usize>() {
+            return Some(Breakpoint { program, line });
+        }
+    }
+    None
+}
+
+pub fn interpret(filenames: &[PathBuf]) -> Result<()> {
     let mut interpreter = Interpreter::new(filenames.iter())?;
     let mut buffer = String::new();
     println!("{}", INSTRUCTIONS);
@@ -252,7 +292,13 @@ pub fn interpret(filenames: &[String]) -> Result<()> {
             "#r" | "#run" => InterpreterAction::Run,
             "#q" | "#quit" => return Ok(()),
             s => {
-                if let Some(rest) = s.strip_prefix("#into ").or(s.strip_prefix("#i ")) {
+                if let Some(rest) = s.strip_prefix("#break ").or(s.strip_prefix("#b ")) {
+                    let Some(breakpoint) = parse_breakpoint(rest) else {
+                        println!("Failed to parse breakpoint");
+                        continue;
+                    };
+                    InterpreterAction::Breakpoint(breakpoint)
+                } else if let Some(rest) = s.strip_prefix("#into ").or(s.strip_prefix("#i ")) {
                     InterpreterAction::LeoInterpretInto(rest.trim().into())
                 } else {
                     InterpreterAction::LeoInterpretOver(s.trim().into())
