@@ -24,6 +24,10 @@ use std::{
 
 use indexmap::{IndexMap, IndexSet};
 
+use rand::Rng as _;
+
+use rand_chacha::{ChaCha20Rng, rand_core::SeedableRng};
+
 use snarkvm::prelude::{
     Address as SvmAddressParam,
     Boolean as SvmBooleanParam,
@@ -560,7 +564,7 @@ pub struct GlobalId {
     pub name: Symbol,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Cursor<'a> {
     pub frames: Vec<Frame<'a>>,
     pub values: Vec<Value>,
@@ -569,9 +573,23 @@ pub struct Cursor<'a> {
     pub mappings: HashMap<GlobalId, HashMap<Value, Value>>,
     pub structs: HashMap<GlobalId, IndexSet<Symbol>>,
     contexts: ContextStack,
+    rng: ChaCha20Rng,
 }
 
 impl<'a> Cursor<'a> {
+    pub fn new() -> Self {
+        Cursor {
+            frames: Default::default(),
+            values: Default::default(),
+            functions: Default::default(),
+            globals: Default::default(),
+            mappings: Default::default(),
+            structs: Default::default(),
+            contexts: Default::default(),
+            rng: ChaCha20Rng::from_entropy(),
+        }
+    }
+
     fn pop_value(&mut self) -> Result<Value> {
         match self.values.pop() {
             Some(v) => Ok(v),
@@ -1140,21 +1158,21 @@ impl<'a> Cursor<'a> {
                     CoreFunction::BHP1024HashToScalar => {
                         apply_cast!(TestnetV0::hash_to_group_bhp1024, Scalar, to_bits_le)
                     }
-                    CoreFunction::ChaChaRandAddress => todo!(),
-                    CoreFunction::ChaChaRandBool => todo!(),
-                    CoreFunction::ChaChaRandField => todo!(),
-                    CoreFunction::ChaChaRandGroup => todo!(),
-                    CoreFunction::ChaChaRandI8 => todo!(),
-                    CoreFunction::ChaChaRandI16 => todo!(),
-                    CoreFunction::ChaChaRandI32 => todo!(),
-                    CoreFunction::ChaChaRandI64 => todo!(),
-                    CoreFunction::ChaChaRandI128 => todo!(),
-                    CoreFunction::ChaChaRandU8 => todo!(),
-                    CoreFunction::ChaChaRandU16 => todo!(),
-                    CoreFunction::ChaChaRandU32 => todo!(),
-                    CoreFunction::ChaChaRandU64 => todo!(),
-                    CoreFunction::ChaChaRandU128 => todo!(),
-                    CoreFunction::ChaChaRandScalar => todo!(),
+                    CoreFunction::ChaChaRandAddress => Value::Address(self.rng.gen()),
+                    CoreFunction::ChaChaRandBool => Value::Bool(self.rng.gen()),
+                    CoreFunction::ChaChaRandField => Value::Field(self.rng.gen()),
+                    CoreFunction::ChaChaRandGroup => Value::Group(self.rng.gen()),
+                    CoreFunction::ChaChaRandI8 => Value::I8(self.rng.gen()),
+                    CoreFunction::ChaChaRandI16 => Value::I16(self.rng.gen()),
+                    CoreFunction::ChaChaRandI32 => Value::I32(self.rng.gen()),
+                    CoreFunction::ChaChaRandI64 => Value::I64(self.rng.gen()),
+                    CoreFunction::ChaChaRandI128 => Value::I128(self.rng.gen()),
+                    CoreFunction::ChaChaRandU8 => Value::U8(self.rng.gen()),
+                    CoreFunction::ChaChaRandU16 => Value::U16(self.rng.gen()),
+                    CoreFunction::ChaChaRandU32 => Value::U32(self.rng.gen()),
+                    CoreFunction::ChaChaRandU64 => Value::U64(self.rng.gen()),
+                    CoreFunction::ChaChaRandU128 => Value::U128(self.rng.gen()),
+                    CoreFunction::ChaChaRandScalar => Value::Scalar(self.rng.gen()),
                     CoreFunction::Keccak256HashToAddress => apply_cast!(
                         |v| TestnetV0::hash_to_group_bhp256(&TestnetV0::hash_keccak256(v).expect_tc(span)?),
                         Address,

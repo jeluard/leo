@@ -1572,6 +1572,8 @@ dependencies = [
  "leo-parser",
  "leo-passes",
  "leo-span",
+ "rand",
+ "rand_chacha",
  "snarkvm",
  "snarkvm-circuit",
 ]

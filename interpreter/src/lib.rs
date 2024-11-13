@@ -76,7 +76,7 @@ impl Interpreter {
     fn new_impl(source_files: &mut dyn Iterator<Item = &Path>) -> Result<Self> {
         let handler = Handler::default();
         let node_builder = Default::default();
-        let mut cursor: Cursor<'_> = Cursor::default();
+        let mut cursor: Cursor<'_> = Cursor::new();
         let mut filename_to_program = HashMap::new();
         for path in source_files {
             let ast = Self::get_ast(path, &handler, &node_builder)?;
