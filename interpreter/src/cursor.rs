@@ -2378,7 +2378,7 @@ impl<'a> Cursor<'a> {
     /// does nothing.
     pub fn step(&mut self) -> Result<StepResult> {
         if self.frames.is_empty() {
-            halt!("no execution frames available");
+            return Err(InterpreterHalt::new("no execution frames available".into()).into());
         }
 
         let Frame { element, step, user_initiated } = self.frames.last().expect("there should be a frame");
