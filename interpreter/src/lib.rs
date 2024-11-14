@@ -39,7 +39,6 @@ use cursor::*;
 /// the breakpoints.
 pub struct Interpreter {
     cursor: Cursor<'static>,
-    cursor_initial: Cursor<'static>,
     actions: Vec<InterpreterAction>,
     handler: Handler,
     node_builder: NodeBuilder,
@@ -115,11 +114,8 @@ impl Interpreter {
             }
         }
 
-        let cursor_initial = cursor.clone();
-
         Ok(Interpreter {
             cursor,
-            cursor_initial,
             handler,
             node_builder,
             actions: Vec::new(),

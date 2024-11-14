@@ -42,7 +42,7 @@ use snarkvm::prelude::{
     Network as _,
     Pow as _,
     Scalar as SvmScalarParam,
-    Signature as SvmSignatureParam,
+    // Signature as SvmSignatureParam,
     SizeInBits,
     Square as _,
     SquareRoot as _,
@@ -58,7 +58,7 @@ type SvmGroup = SvmGroupParam<TestnetV0>;
 type SvmIdentifier = SvmIdentifierParam<TestnetV0>;
 type SvmInteger<I> = SvmIntegerParam<TestnetV0, I>;
 type SvmScalar = SvmScalarParam<TestnetV0>;
-type SvmSignature = SvmSignatureParam<TestnetV0>;
+// type SvmSignature = SvmSignatureParam<TestnetV0>;
 
 use leo_ast::{
     AccessExpression,
@@ -139,6 +139,9 @@ impl Hash for StructContents {
     }
 }
 
+/// A Leo value of any type.
+///
+/// Mappings and functions aren't considered values.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub enum Value {
     #[default]
@@ -158,13 +161,12 @@ pub enum Value {
     Field(SvmField),
     Scalar(SvmScalar),
     Array(Vec<Value>),
-    Signature(Box<SvmSignature>),
-    String(()),
+    // Signature(Box<SvmSignature>),
     Tuple(Vec<Value>),
     Address(SvmAddress),
-    Record(()),
-    Future(()),
+    // Future(()),
     Struct(StructContents),
+    // String(()),
 }
 
 impl fmt::Display for Value {
@@ -220,10 +222,9 @@ impl fmt::Display for Value {
                 write!(f, ")")
             }
             Address(x) => write!(f, "{x}"),
-            Signature(x) => write!(f, "{x}"),
-            String(_) => todo!(),
-            Record(_) => todo!(),
-            Future(_) => todo!(),
+            // Signature(x) => write!(f, "{x}"),
+            // Future(_) => todo!(),
+            // String(_) => todo!(),
         }
     }
 }
@@ -286,12 +287,9 @@ impl ToBits for Value {
             Scalar(x) => {
                 literal!(14u8, x);
             }
-            Signature(x) => {
-                literal!(15u8, x);
-            }
-            String(_) => {
-                // literal!(16u8);
-            }
+            // Signature(x) => {
+            //     literal!(15u8, x);
+            // }
             Address(x) => {
                 literal!(0u8, x);
             }
@@ -317,10 +315,11 @@ impl ToBits for Value {
                 }
             }
 
-            Record(_) => todo!(),
-            Future(_) => todo!(),
-
+            // Future(_) => todo!(),
             Tuple(_) | Unit => tc_fail!(),
+            // String(_) => {
+            //     literal!(16u8);
+            // }
         }
     }
 
@@ -355,16 +354,14 @@ impl Value {
             Group(_) => SvmGroup::size_in_bits() as u16,
             Field(_) => SvmField::size_in_bits() as u16,
             Scalar(_) => SvmScalar::size_in_bits() as u16,
-            Signature(_) => SvmSignature::size_in_bits() as u16,
-            String(_) => todo!(),
+            // Signature(_) => SvmSignature::size_in_bits() as u16,
             Address(_) => SvmAddress::size_in_bits() as u16,
 
-            Record(_) => todo!(),
-            Future(_) => todo!(),
-
+            // Future(_) => todo!(),
             Struct(StructContents { .. }) => todo!(),
             Array(_) => todo!(),
             Tuple(_) | Unit => tc_fail!(),
+            // String(_) => todo!(),
         }
     }
 
@@ -489,12 +486,14 @@ impl Value {
     }
 }
 
+/// Names associated to values in a function being executed.
 #[derive(Clone, Debug)]
 struct FunctionContext {
     program: Symbol,
     names: HashMap<Symbol, Value>,
 }
 
+/// A stack of contexts, building with the function call stack.
 #[derive(Clone, Debug, Default)]
 struct ContextStack {
     contexts: Vec<FunctionContext>,
@@ -533,10 +532,23 @@ impl ContextStack {
     }
 }
 
+/// A Leo construct to be evauated.
 #[derive(Copy, Clone, Debug)]
 pub enum Element<'a> {
+    /// A Leo statement.
     Statement(&'a Statement),
+
+    /// A Leo expression.
     Expression(&'a Expression),
+
+    /// A Leo block.
+    ///
+    /// We have a separate variant for Leo blocks for two reasons:
+    /// 1. In a ConditionalExpression, the `then` block is stored
+    ///    as just a Block with no statement, and
+    /// 2. We need to remember if a Block came from a function body,
+    ///    so that if such a block ends, we know to push a `Unit` to
+    ///    the values stack.
     Block { block: &'a Block, function_body: bool },
 }
 
@@ -551,6 +563,8 @@ impl Element<'_> {
     }
 }
 
+/// A frame of execution, keeping track of the Element next to
+/// be executed and the number of steps we've done so far.
 #[derive(Clone, Debug)]
 pub struct Frame<'a> {
     pub step: usize,
@@ -558,21 +572,38 @@ pub struct Frame<'a> {
     pub user_initiated: bool,
 }
 
+/// Global values - such as mappings, functions, etc -
+/// are identified by program and name.
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub struct GlobalId {
     pub program: Symbol,
     pub name: Symbol,
 }
 
+/// Tracks the current execution state - a cursor into the running program.
 #[derive(Clone, Debug)]
 pub struct Cursor<'a> {
+    /// Stack of execution frames, with the one currently to be executed on top.
     pub frames: Vec<Frame<'a>>,
+
+    /// Stack of values from evaluated expressions.
+    ///
+    /// Each time an expression completes evaluation, a value is pushed here.
     pub values: Vec<Value>,
+
+    /// All functions (or transitions or inlines) in any program being interpreted.
     pub functions: HashMap<GlobalId, &'a Function>,
+
+    /// Consts are stored here.
     pub globals: HashMap<GlobalId, Value>,
+
     pub mappings: HashMap<GlobalId, HashMap<Value, Value>>,
+
+    /// For each struct type, we only need to remember the names of its members, in order.
     pub structs: HashMap<GlobalId, IndexSet<Symbol>>,
+
     contexts: ContextStack,
+
     rng: ChaCha20Rng,
 }
 
@@ -631,6 +662,10 @@ impl<'a> Cursor<'a> {
         self.functions.get(&GlobalId { program, name }).cloned()
     }
 
+    /// Execute the whole step of the current Element.
+    ///
+    /// That is, perform a step, and then finish all statements and expressions that have been pushed,
+    /// until we're ready for the next step of the current Element (if there is one).
     pub fn whole_step(&mut self) -> Result<StepResult> {
         let frames_len = self.frames.len();
         let initial_result = self.step()?;
@@ -642,6 +677,9 @@ impl<'a> Cursor<'a> {
         Ok(initial_result)
     }
 
+    /// Step `over` the current Element.
+    ///
+    /// That is, continue executing until the current Element is finished.
     pub fn over(&mut self) -> Result<StepResult> {
         let frames_len = self.frames.len();
         loop {
@@ -2221,6 +2259,13 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    /// Execute one step of the current element.
+    ///
+    /// Many Leo constructs require multiple steps. For instance, when executing a conditional,
+    /// the first step will push the condition expression to the stack. Once that has executed
+    /// and we've returned to the conditional, we push the `then` or `otherwise` block to the
+    /// stack. Once that has executed and we've returned to the conditional, the final step
+    /// does nothing.
     pub fn step(&mut self) -> Result<StepResult> {
         let Frame { element, step, user_initiated } = self.frames.last().expect("there should be a frame");
         let user_initiated = *user_initiated;
@@ -2248,10 +2293,14 @@ impl<'a> Cursor<'a> {
 
 #[derive(Clone, Debug)]
 pub struct StepResult {
+    /// Has this element completely finished running?
     pub finished: bool,
+
+    /// If the element was an expression, here's its value.
     pub value: Option<Value>,
 }
 
+/// Evaluate a binary operation.
 fn evaluate_binary(span: Span, op: BinaryOperation, lhs: Value, rhs: Value) -> Result<Value> {
     let value = match op {
         BinaryOperation::Add => {
@@ -2670,6 +2719,7 @@ fn evaluate_binary(span: Span, op: BinaryOperation, lhs: Value, rhs: Value) -> R
     Ok(value)
 }
 
+/// Evaluate a unary operation.
 fn evaluate_unary(span: Span, op: UnaryOperation, value: Value) -> Result<Value> {
     let value_result = match op {
         UnaryOperation::Abs => match value {
