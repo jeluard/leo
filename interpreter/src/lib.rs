@@ -34,6 +34,9 @@ use leo_errors::{CompilerError, InterpreterHalt, LeoError, Result, emitter::Hand
 mod cursor;
 use cursor::*;
 
+/// Contains the state of interpretation, in the form of the `Cursor`,
+/// as well as information needed to interact with the user, like
+/// the breakpoints.
 pub struct Interpreter {
     cursor: Cursor<'static>,
     cursor_initial: Cursor<'static>,
@@ -54,15 +57,15 @@ pub struct Breakpoint {
 pub enum InterpreterAction {
     LeoInterpretInto(String),
     LeoInterpretOver(String),
+    Breakpoint(Breakpoint),
     Into,
     Over,
     Step,
-    Breakpoint(Breakpoint),
     Run,
 }
 
 impl Interpreter {
-    pub fn new<'a, P: 'a + AsRef<Path>>(source_files: impl IntoIterator<Item = &'a P>) -> Result<Self> {
+    fn new<'a, P: 'a + AsRef<Path>>(source_files: impl IntoIterator<Item = &'a P>) -> Result<Self> {
         Self::new_impl(&mut source_files.into_iter().map(|p| p.as_ref()))
     }
 
@@ -186,7 +189,7 @@ impl Interpreter {
         Ok(ret.value)
     }
 
-    pub fn view_current(&self) -> Option<impl Display> {
+    fn view_current(&self) -> Option<impl Display> {
         if let Some(span) = self.current_span() {
             if span != Default::default() {
                 return with_session_globals(|s| s.source_map.contents_of_span(span));
@@ -200,7 +203,7 @@ impl Interpreter {
         })
     }
 
-    pub fn view_current_in_context(&self) -> Option<impl Display> {
+    fn view_current_in_context(&self) -> Option<impl Display> {
         let span = self.current_span()?;
         if span == Default::default() {
             return None;
@@ -273,6 +276,8 @@ fn parse_breakpoint(s: &str) -> Option<Breakpoint> {
     None
 }
 
+/// Loading all the Leo source files indicated and open the interpreter
+/// to commands from the user.
 pub fn interpret(filenames: &[PathBuf]) -> Result<()> {
     let mut interpreter = Interpreter::new(filenames.iter())?;
     let mut buffer = String::new();
