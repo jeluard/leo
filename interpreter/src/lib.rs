@@ -295,7 +295,7 @@ fn parse_breakpoint(s: &str) -> Option<Breakpoint> {
     None
 }
 
-/// Loading all the Leo source files indicated and open the interpreter
+/// Load all the Leo source files indicated and open the interpreter
 /// to commands from the user.
 pub fn interpret(filenames: &[PathBuf]) -> Result<()> {
     let mut interpreter = Interpreter::new(filenames.iter())?;
