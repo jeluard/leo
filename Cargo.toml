@@ -182,7 +182,6 @@ features = [ "derive", "env", "color", "unstable-styles" ]
 
 [dependencies.colored]
 workspace = true
-version = "2.0"
 
 [dependencies.dotenvy]
 version = "0.15.7"

@@ -159,8 +159,6 @@ impl Interpreter {
                             LeoError::InterpreterHalt(InterpreterHalt::new("failed to parse expression".into()))
                         })?;
                     // TOOD: This leak is silly.
-                    println!("The expression is {expression:?}");
-                    println!("Contexts: {:?}", self.cursor.contexts);
                     let expr = Box::leak(Box::new(expression));
                     expr.set_span(Default::default());
                     self.cursor.frames.push(Frame {

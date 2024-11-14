@@ -689,6 +689,7 @@ pub struct Cursor<'a> {
 }
 
 impl<'a> Cursor<'a> {
+    /// `really_async` indicates we should really delay execution of async function calls until the user runs them.
     pub fn new(really_async: bool) -> Self {
         Cursor {
             frames: Default::default(),
@@ -2399,7 +2400,9 @@ impl<'a> Cursor<'a> {
                     (true, false) => self.values.last().cloned(),
                     (true, true) => self.values.pop(),
                 };
-                if let Some(Value::Future(future)) = &value {
+                let maybe_future = if let Some(Value::Tuple(vals)) = &value { vals.last() } else { value.as_ref() };
+
+                if let Some(Value::Future(future)) = &maybe_future {
                     if user_initiated && !future.0.is_empty() {
                         self.futures.push(future.clone());
                     }
