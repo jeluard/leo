@@ -2377,6 +2377,10 @@ impl<'a> Cursor<'a> {
     /// stack. Once that has executed and we've returned to the conditional, the final step
     /// does nothing.
     pub fn step(&mut self) -> Result<StepResult> {
+        if self.frames.is_empty() {
+            halt!("no execution frames available");
+        }
+
         let Frame { element, step, user_initiated } = self.frames.last().expect("there should be a frame");
         let user_initiated = *user_initiated;
         match element {
