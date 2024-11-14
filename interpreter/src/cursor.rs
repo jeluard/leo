@@ -19,6 +19,7 @@ use std::{
     collections::HashMap,
     fmt,
     hash::{Hash, Hasher},
+    mem,
     str::FromStr as _,
 };
 
@@ -76,6 +77,7 @@ use leo_ast::{
     Statement,
     Type,
     UnaryOperation,
+    Variant,
 };
 
 use leo_span::{Span, Symbol};
@@ -139,6 +141,32 @@ impl Hash for StructContents {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct AsyncExecution {
+    pub function: GlobalId,
+    pub arguments: Vec<Value>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
+pub struct Future(pub Vec<AsyncExecution>);
+
+impl fmt::Display for Future {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Future")?;
+        if !self.0.is_empty() {
+            write!(f, " with calls to ")?;
+            let mut names = self.0.iter().map(|async_ex| async_ex.function).peekable();
+            while let Some(name) = names.next() {
+                write!(f, "{name}")?;
+                if names.peek().is_some() {
+                    write!(f, ", ")?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// A Leo value of any type.
 ///
 /// Mappings and functions aren't considered values.
@@ -164,7 +192,7 @@ pub enum Value {
     // Signature(Box<SvmSignature>),
     Tuple(Vec<Value>),
     Address(SvmAddress),
-    // Future(()),
+    Future(Future),
     Struct(StructContents),
     // String(()),
 }
@@ -174,6 +202,7 @@ impl fmt::Display for Value {
         use Value::*;
         match self {
             Unit => write!(f, "()"),
+
             Bool(x) => write!(f, "{x}"),
             U8(x) => write!(f, "{x}u8"),
             U16(x) => write!(f, "{x}u16"),
@@ -222,8 +251,8 @@ impl fmt::Display for Value {
                 write!(f, ")")
             }
             Address(x) => write!(f, "{x}"),
+            Future(future) => write!(f, "{future}"),
             // Signature(x) => write!(f, "{x}"),
-            // Future(_) => todo!(),
             // String(_) => todo!(),
         }
     }
@@ -315,8 +344,7 @@ impl ToBits for Value {
                 }
             }
 
-            // Future(_) => todo!(),
-            Tuple(_) | Unit => tc_fail!(),
+            Future(_) | Tuple(_) | Unit => tc_fail!(),
             // String(_) => {
             //     literal!(16u8);
             // }
@@ -357,10 +385,9 @@ impl Value {
             // Signature(_) => SvmSignature::size_in_bits() as u16,
             Address(_) => SvmAddress::size_in_bits() as u16,
 
-            // Future(_) => todo!(),
             Struct(StructContents { .. }) => todo!(),
             Array(_) => todo!(),
-            Tuple(_) | Unit => tc_fail!(),
+            Future(_) | Tuple(_) | Unit => tc_fail!(),
             // String(_) => todo!(),
         }
     }
@@ -491,11 +518,13 @@ impl Value {
 struct FunctionContext {
     program: Symbol,
     names: HashMap<Symbol, Value>,
+    accumulated_futures: Future,
+    is_async: bool,
 }
 
 /// A stack of contexts, building with the function call stack.
 #[derive(Clone, Debug, Default)]
-struct ContextStack {
+pub struct ContextStack {
     contexts: Vec<FunctionContext>,
     current_len: usize,
 }
@@ -505,11 +534,19 @@ impl ContextStack {
         self.current_len
     }
 
-    fn push(&mut self, program: Symbol) {
+    fn push(&mut self, program: Symbol, is_async: bool) {
         if self.current_len == self.contexts.len() {
-            self.contexts.push(FunctionContext { program, names: HashMap::new() });
+            self.contexts.push(FunctionContext {
+                program,
+                names: HashMap::new(),
+                accumulated_futures: Default::default(),
+                is_async,
+            });
         }
+        self.contexts[self.current_len].accumulated_futures.0.clear();
+        self.contexts[self.current_len].names.clear();
         self.contexts[self.current_len].program = program;
+        self.contexts[self.current_len].is_async = is_async;
         self.current_len += 1;
     }
 
@@ -522,13 +559,41 @@ impl ContextStack {
         self.contexts[self.current_len].names.clear();
     }
 
+    /// Get the future accumulated by awaiting futures in the current function call.
+    ///
+    /// If the current code being interpreted is not in an async function, this
+    /// will of course be empty.
+    fn get_future(&mut self) -> Future {
+        assert!(self.len() > 0);
+        mem::take(&mut self.contexts[self.current_len - 1].accumulated_futures)
+    }
+
     fn set(&mut self, symbol: Symbol, value: Value) {
         assert!(self.current_len > 0);
-        self.contexts[self.current_len - 1].names.insert(symbol, value);
+        self.last_mut().unwrap().names.insert(symbol, value);
+    }
+
+    fn add_future(&mut self, future: Future) {
+        assert!(self.current_len > 0);
+        self.contexts[self.current_len - 1].accumulated_futures.0.extend(future.0);
+    }
+
+    /// Are we currently in an async function?
+    fn is_async(&self) -> bool {
+        assert!(self.current_len > 0);
+        self.last().unwrap().is_async
     }
 
     fn current_program(&self) -> Option<Symbol> {
-        self.contexts.last().map(|c| c.program)
+        self.last().map(|c| c.program)
+    }
+
+    fn last(&self) -> Option<&FunctionContext> {
+        self.len().checked_sub(1).and_then(|i| self.contexts.get(i))
+    }
+
+    fn last_mut(&mut self) -> Option<&mut FunctionContext> {
+        self.len().checked_sub(1).and_then(|i| self.contexts.get_mut(i))
     }
 }
 
@@ -549,7 +614,12 @@ pub enum Element<'a> {
     /// 2. We need to remember if a Block came from a function body,
     ///    so that if such a block ends, we know to push a `Unit` to
     ///    the values stack.
-    Block { block: &'a Block, function_body: bool },
+    Block {
+        block: &'a Block,
+        function_body: bool,
+    },
+
+    DelayedCall(GlobalId),
 }
 
 impl Element<'_> {
@@ -559,6 +629,7 @@ impl Element<'_> {
             Statement(statement) => statement.span(),
             Expression(expression) => expression.span(),
             Block { block, .. } => block.span(),
+            DelayedCall(..) => Default::default(),
         }
     }
 }
@@ -578,6 +649,12 @@ pub struct Frame<'a> {
 pub struct GlobalId {
     pub program: Symbol,
     pub name: Symbol,
+}
+
+impl fmt::Display for GlobalId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.program, self.name)
+    }
 }
 
 /// Tracks the current execution state - a cursor into the running program.
@@ -602,13 +679,17 @@ pub struct Cursor<'a> {
     /// For each struct type, we only need to remember the names of its members, in order.
     pub structs: HashMap<GlobalId, IndexSet<Symbol>>,
 
-    contexts: ContextStack,
+    pub futures: Vec<Future>,
+
+    pub contexts: ContextStack,
 
     rng: ChaCha20Rng,
+
+    really_async: bool,
 }
 
 impl<'a> Cursor<'a> {
-    pub fn new() -> Self {
+    pub fn new(really_async: bool) -> Self {
         Cursor {
             frames: Default::default(),
             values: Default::default(),
@@ -617,7 +698,9 @@ impl<'a> Cursor<'a> {
             mappings: Default::default(),
             structs: Default::default(),
             contexts: Default::default(),
+            futures: Default::default(),
             rng: ChaCha20Rng::from_entropy(),
+            really_async,
         }
     }
 
@@ -632,7 +715,7 @@ impl<'a> Cursor<'a> {
     }
 
     fn lookup(&self, name: Symbol) -> Option<Value> {
-        let Some(context) = self.contexts.contexts.last() else {
+        let Some(context) = self.contexts.last() else {
             panic!("lookup requires a context");
         };
 
@@ -645,14 +728,14 @@ impl<'a> Cursor<'a> {
     }
 
     fn lookup_mapping(&self, program: Option<Symbol>, name: Symbol) -> Option<&HashMap<Value, Value>> {
-        let Some(program) = program.or(self.contexts.contexts.last().map(|c| c.program)) else {
+        let Some(program) = program.or(self.contexts.last().map(|c| c.program)) else {
             panic!("no program for mapping lookup");
         };
         self.mappings.get(&GlobalId { program, name })
     }
 
     fn lookup_mapping_mut(&mut self, program: Option<Symbol>, name: Symbol) -> Option<&mut HashMap<Value, Value>> {
-        let Some(program) = program.or(self.contexts.contexts.last().map(|c| c.program)) else {
+        let Some(program) = program.or(self.contexts.last().map(|c| c.program)) else {
             panic!("no program for mapping lookup");
         };
         self.mappings.get_mut(&GlobalId { program, name })
@@ -714,7 +797,12 @@ impl<'a> Cursor<'a> {
                 false
             }
             1 if function_body => {
-                self.values.push(Value::Unit);
+                if self.contexts.is_async() {
+                    let future = self.contexts.get_future();
+                    self.values.push(Value::Future(future));
+                } else {
+                    self.values.push(Value::Unit);
+                }
                 self.contexts.pop();
                 true
             }
@@ -865,11 +953,19 @@ impl<'a> Cursor<'a> {
             }
             Statement::Return(_) if step == 1 => loop {
                 let last_frame = self.frames.last().expect("a frame should be present");
-                if let Frame { element: Element::Expression(Expression::Call(_)), .. } = last_frame {
-                    self.contexts.pop();
-                    return Ok(true);
-                } else {
-                    self.frames.pop();
+                match last_frame.element {
+                    Element::Expression(Expression::Call(_)) | Element::DelayedCall(_) => {
+                        if self.contexts.is_async() {
+                            // Get rid of the Unit we previously pushed, and replace it with a Future.
+                            self.values.pop();
+                            self.values.push(Value::Future(self.contexts.get_future()));
+                        }
+                        self.contexts.pop();
+                        return Ok(true);
+                    }
+                    _ => {
+                        self.frames.pop();
+                    }
                 }
             },
             _ => unreachable!(),
@@ -2002,7 +2098,13 @@ impl<'a> Cursor<'a> {
                         Value::Field(g.to_y_coordinate())
                     }
                     CoreFunction::SignatureVerify => todo!(),
-                    CoreFunction::FutureAwait => todo!(),
+                    CoreFunction::FutureAwait => {
+                        let Value::Future(future) = self.pop_value()? else {
+                            tc_fail!();
+                        };
+                        self.contexts.add_future(future);
+                        Value::Unit
+                    }
                 };
                 Some(value)
             }
@@ -2042,17 +2144,25 @@ impl<'a> Cursor<'a> {
                     _ => tc_fail!(),
                 };
                 let function = self.lookup_function(program, name).expect_tc(call.span())?;
-                self.contexts.push(program);
-                let param_names = function.input.iter().map(|input| input.identifier.name);
-                let iter = self.values.drain(len - call.arguments.len()..);
-                for (name, value) in param_names.zip(iter) {
-                    self.contexts.set(name, value);
+                let values_iter = self.values.drain(len - call.arguments.len()..);
+                if self.really_async && function.variant == Variant::AsyncFunction {
+                    // Don't actually run the call now.
+                    let async_ex =
+                        AsyncExecution { function: GlobalId { name, program }, arguments: values_iter.collect() };
+                    self.values.push(Value::Future(Future(vec![async_ex])));
+                } else {
+                    let is_async = function.variant == Variant::AsyncFunction;
+                    self.contexts.push(program, is_async);
+                    let param_names = function.input.iter().map(|input| input.identifier.name);
+                    for (name, value) in param_names.zip(values_iter) {
+                        self.contexts.set(name, value);
+                    }
+                    self.frames.push(Frame {
+                        step: 0,
+                        element: Element::Block { block: &function.block, function_body: true },
+                        user_initiated: false,
+                    });
                 }
-                self.frames.push(Frame {
-                    step: 0,
-                    element: Element::Block { block: &function.block, function_body: true },
-                    user_initiated: false,
-                });
                 None
             }
             Expression::Call(_call) if step == 2 => Some(self.pop_value()?),
@@ -2285,7 +2395,45 @@ impl<'a> Cursor<'a> {
                     (true, false) => self.values.last().cloned(),
                     (true, true) => self.values.pop(),
                 };
+                if let Some(Value::Future(future)) = &value {
+                    if user_initiated && !future.0.is_empty() {
+                        self.futures.push(future.clone());
+                    }
+                }
                 Ok(StepResult { finished, value })
+            }
+            Element::DelayedCall(gid) if *step == 0 => {
+                let function = self.lookup_function(gid.program, gid.name).expect("function should exist");
+                assert!(function.variant == Variant::AsyncFunction);
+                let len = self.values.len();
+                let values_iter = self.values.drain(len - function.input.len()..);
+                self.contexts.push(
+                    gid.program,
+                    true, // is_async
+                );
+                let param_names = function.input.iter().map(|input| input.identifier.name);
+                for (name, value) in param_names.zip(values_iter) {
+                    self.contexts.set(name, value);
+                }
+                self.frames.last_mut().unwrap().step = 1;
+                self.frames.push(Frame {
+                    step: 0,
+                    element: Element::Block { block: &function.block, function_body: true },
+                    user_initiated: false,
+                });
+                Ok(StepResult { finished: false, value: None })
+            }
+            Element::DelayedCall(_gid) => {
+                assert_eq!(*step, 1);
+                let value = self.values.pop();
+                let Some(Value::Future(future)) = value else {
+                    panic!("Delayed calls should always be to async functions");
+                };
+                if !future.0.is_empty() {
+                    self.futures.push(future.clone());
+                }
+                self.frames.pop();
+                Ok(StepResult { finished: true, value: Some(Value::Future(future)) })
             }
         }
     }

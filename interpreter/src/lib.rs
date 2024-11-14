@@ -56,6 +56,7 @@ pub struct Breakpoint {
 pub enum InterpreterAction {
     LeoInterpretInto(String),
     LeoInterpretOver(String),
+    RunFuture(usize),
     Breakpoint(Breakpoint),
     Into,
     Over,
@@ -78,7 +79,9 @@ impl Interpreter {
     fn new_impl(source_files: &mut dyn Iterator<Item = &Path>) -> Result<Self> {
         let handler = Handler::default();
         let node_builder = Default::default();
-        let mut cursor: Cursor<'_> = Cursor::new();
+        let mut cursor: Cursor<'_> = Cursor::new(
+            true, // really_async
+        );
         let mut filename_to_program = HashMap::new();
         for path in source_files {
             let ast = Self::get_ast(path, &handler, &node_builder)?;
@@ -128,6 +131,18 @@ impl Interpreter {
         use InterpreterAction::*;
 
         let ret = match &act {
+            RunFuture(n) => {
+                let future = self.cursor.futures.remove(*n);
+                for async_exec in future.0.into_iter().rev() {
+                    self.cursor.values.extend(async_exec.arguments);
+                    self.cursor.frames.push(Frame {
+                        step: 0,
+                        element: Element::DelayedCall(async_exec.function),
+                        user_initiated: true,
+                    });
+                }
+                self.cursor.step()?
+            }
             LeoInterpretInto(s) | LeoInterpretOver(s) => {
                 let s = s.trim();
                 if s.ends_with(';') {
@@ -144,6 +159,8 @@ impl Interpreter {
                             LeoError::InterpreterHalt(InterpreterHalt::new("failed to parse expression".into()))
                         })?;
                     // TOOD: This leak is silly.
+                    println!("The expression is {expression:?}");
+                    println!("Contexts: {:?}", self.cursor.contexts);
                     let expr = Box::leak(Box::new(expression));
                     expr.set_span(Default::default());
                     self.cursor.frames.push(Frame {
@@ -196,6 +213,7 @@ impl Interpreter {
             Element::Statement(statement) => format!("{statement}"),
             Element::Expression(expression) => format!("{expression}"),
             Element::Block { block, .. } => format!("{block}"),
+            Element::DelayedCall(gid) => format!("Delayed call to {gid}"),
         })
     }
 
@@ -251,11 +269,16 @@ You can set a breakpoint with
 #break program_name line_number
 
 You may also use one letter abbreviations for these commands, such as #i.
-Finally, you may simply enter expressions or statements on the command line
+
+You may simply enter expressions or statements on the command line
 to evaluate. For instance, if you want to see the value of a variable w:
 w
 If you want to set w to a new value:
 w = z + 2u8;
+
+If there are futures available to be executed, they will be listed by
+numerical index, and you may run them using `#future` (or `#f`); for instance
+#future 0
 ";
 
 fn parse_breakpoint(s: &str) -> Option<Breakpoint> {
@@ -285,6 +308,9 @@ pub fn interpret(filenames: &[PathBuf]) -> Result<()> {
         } else if let Some(v) = interpreter.view_current() {
             println!("{v}");
         }
+        for (i, future) in interpreter.cursor.futures.iter().enumerate() {
+            println!("{i}: {future}");
+        }
         std::io::stdin().read_line(&mut buffer).expect("read_line");
         let action = match buffer.trim() {
             "#i" | "#into" => InterpreterAction::Into,
@@ -293,7 +319,18 @@ pub fn interpret(filenames: &[PathBuf]) -> Result<()> {
             "#r" | "#run" => InterpreterAction::Run,
             "#q" | "#quit" => return Ok(()),
             s => {
-                if let Some(rest) = s.strip_prefix("#break ").or(s.strip_prefix("#b ")) {
+                if let Some(rest) = s.strip_prefix("#future ").or(s.strip_prefix("#f ")) {
+                    if let Ok(num) = rest.trim().parse::<usize>() {
+                        if num >= interpreter.cursor.futures.len() {
+                            println!("No such future");
+                            continue;
+                        }
+                        InterpreterAction::RunFuture(num)
+                    } else {
+                        println!("Failed to parse future");
+                        continue;
+                    }
+                } else if let Some(rest) = s.strip_prefix("#break ").or(s.strip_prefix("#b ")) {
                     let Some(breakpoint) = parse_breakpoint(rest) else {
                         println!("Failed to parse breakpoint");
                         continue;
