@@ -14,6 +14,13 @@
 // You should have received a copy of the GNU General Public License
 // along with the Leo library. If not, see <https://www.gnu.org/licenses/>.
 
+use leo_ast::{Ast, Node as _, NodeBuilder};
+use leo_errors::{CompilerError, InterpreterHalt, LeoError, Result, emitter::Handler};
+use leo_span::{Span, source_map::FileName, symbol::with_session_globals};
+
+use snarkvm::prelude::TestnetV0;
+
+use colored::*;
 use std::{
     collections::HashMap,
     fmt::Display,
@@ -21,23 +28,19 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use colored::*;
-
-use snarkvm::prelude::TestnetV0;
-
-use leo_ast::{Ast, Node as _, NodeBuilder};
-
-use leo_span::{Span, source_map::FileName, symbol::with_session_globals};
-
-use leo_errors::{CompilerError, InterpreterHalt, LeoError, Result, emitter::Handler};
+mod util;
+use util::*;
 
 mod cursor;
 use cursor::*;
 
+mod value;
+use value::*;
+
 /// Contains the state of interpretation, in the form of the `Cursor`,
 /// as well as information needed to interact with the user, like
 /// the breakpoints.
-pub struct Interpreter {
+struct Interpreter {
     cursor: Cursor<'static>,
     actions: Vec<InterpreterAction>,
     handler: Handler,
@@ -47,13 +50,13 @@ pub struct Interpreter {
 }
 
 #[derive(Clone, Debug)]
-pub struct Breakpoint {
+struct Breakpoint {
     program: String,
     line: usize,
 }
 
 #[derive(Clone, Debug)]
-pub enum InterpreterAction {
+enum InterpreterAction {
     LeoInterpretInto(String),
     LeoInterpretOver(String),
     RunFuture(usize),
@@ -150,7 +153,7 @@ impl Interpreter {
                         .map_err(|_e| {
                             LeoError::InterpreterHalt(InterpreterHalt::new("failed to parse statement".into()))
                         })?;
-                    // TOOD: This leak is silly.
+                    // TODO: This leak is silly.
                     let stmt = Box::leak(Box::new(statement));
                     self.cursor.frames.push(Frame { step: 0, element: Element::Statement(stmt), user_initiated: true });
                 } else {
@@ -158,7 +161,7 @@ impl Interpreter {
                         .map_err(|_e| {
                             LeoError::InterpreterHalt(InterpreterHalt::new("failed to parse expression".into()))
                         })?;
-                    // TOOD: This leak is silly.
+                    // TODO: This leak is silly.
                     let expr = Box::leak(Box::new(expression));
                     expr.set_span(Default::default());
                     self.cursor.frames.push(Frame {

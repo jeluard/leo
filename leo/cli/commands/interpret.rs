@@ -27,7 +27,7 @@ use leo_span::Symbol;
 
 use super::*;
 
-/// Deploys an Aleo program.
+/// Interprets an Aleo program.
 #[derive(Parser, Debug)]
 pub struct LeoInterpret {
     #[clap(flatten)]
