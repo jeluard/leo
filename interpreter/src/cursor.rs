@@ -448,11 +448,22 @@ impl<'a> Cursor<'a> {
                 false
             }
             Statement::Definition(definition) if step == 1 => {
-                let Expression::Identifier(id) = &definition.place else {
-                    tc_fail!();
-                };
                 let value = self.pop_value()?;
-                self.contexts.set(id.name, value);
+                match &definition.place {
+                    Expression::Identifier(id) => self.contexts.set(id.name, value),
+                    Expression::Tuple(tuple) => {
+                        let Value::Tuple(rhs) = value else {
+                            tc_fail!();
+                        };
+                        for (name, val) in tuple.elements.iter().zip(rhs.into_iter()) {
+                            let Expression::Identifier(id) = name else {
+                                tc_fail!();
+                            };
+                            self.contexts.set(id.name, val);
+                        }
+                    }
+                    _ => tc_fail!(),
+                }
                 true
             }
             Statement::Expression(expression) if step == 0 => {

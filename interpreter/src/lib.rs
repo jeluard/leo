@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with the Leo library. If not, see <https://www.gnu.org/licenses/>.
 
-use leo_ast::{Ast, Node as _, NodeBuilder};
+use leo_ast::{AccessExpression, AssertVariant, Ast, ConsoleFunction, Expression, Node as _, NodeBuilder, Statement};
 use leo_errors::{CompilerError, InterpreterHalt, LeoError, Result, emitter::Handler};
 use leo_span::{Span, source_map::FileName, symbol::with_session_globals};
 
@@ -155,6 +155,9 @@ impl Interpreter {
                         })?;
                     // TODO: This leak is silly.
                     let stmt = Box::leak(Box::new(statement));
+
+                    // The spans of the code the user wrote at the REPL are meaningless, so get rid of them.
+                    kill_span_statement(stmt);
                     self.cursor.frames.push(Frame { step: 0, element: Element::Statement(stmt), user_initiated: true });
                 } else {
                     let expression = leo_parser::parse_expression::<TestnetV0>(&self.handler, &self.node_builder, s)
@@ -163,7 +166,9 @@ impl Interpreter {
                         })?;
                     // TODO: This leak is silly.
                     let expr = Box::leak(Box::new(expression));
-                    expr.set_span(Default::default());
+
+                    // The spans of the code the user wrote at the REPL are meaningless, so get rid of them.
+                    kill_span_expression(expr);
                     self.cursor.frames.push(Frame {
                         step: 0,
                         element: Element::Expression(expr),
@@ -294,6 +299,93 @@ fn parse_breakpoint(s: &str) -> Option<Breakpoint> {
         }
     }
     None
+}
+
+/// Set the span of this statement and all its components to the default.
+fn kill_span_statement(statement: &mut Statement) {
+    use Statement::*;
+    statement.set_span(Default::default());
+    match statement {
+        Assert(stmt) => match &mut stmt.variant {
+            AssertVariant::Assert(expr) => kill_span_expression(expr),
+            AssertVariant::AssertEq(left, right) | AssertVariant::AssertNeq(left, right) => {
+                kill_span_expression(left);
+                kill_span_expression(right);
+            }
+        },
+        Assign(stmt) => kill_span_expression(&mut stmt.value),
+        Block(stmt) => stmt.statements.iter_mut().for_each(kill_span_statement),
+        Conditional(stmt) => {
+            kill_span_expression(&mut stmt.condition);
+            stmt.then.statements.iter_mut().for_each(kill_span_statement);
+            stmt.otherwise.iter_mut().for_each(|b| kill_span_statement(b));
+        }
+        Console(stmt) => match &mut stmt.function {
+            ConsoleFunction::Assert(expr) => {
+                kill_span_expression(expr);
+            }
+            ConsoleFunction::AssertEq(left, right) | ConsoleFunction::AssertNeq(left, right) => {
+                kill_span_expression(left);
+                kill_span_expression(right);
+            }
+        },
+        Const(stmt) => kill_span_expression(&mut stmt.value),
+        Definition(stmt) => {
+            kill_span_expression(&mut stmt.place);
+            kill_span_expression(&mut stmt.value);
+        }
+        Expression(stmt) => kill_span_expression(&mut stmt.expression),
+        Iteration(stmt) => {
+            kill_span_expression(&mut stmt.start);
+            kill_span_expression(&mut stmt.stop);
+            stmt.block.statements.iter_mut().for_each(kill_span_statement);
+        }
+        Return(stmt) => kill_span_expression(&mut stmt.expression),
+    }
+}
+
+/// Set the span of this expression and all its components to the default.
+fn kill_span_expression(expression: &mut Expression) {
+    use Expression::*;
+    expression.set_span(Default::default());
+    match expression {
+        Access(access) => match access {
+            AccessExpression::Array(array) => {
+                kill_span_expression(&mut array.array);
+                kill_span_expression(&mut array.index);
+            }
+            AccessExpression::AssociatedFunction(function) => {
+                function.arguments.iter_mut().for_each(kill_span_expression)
+            }
+            AccessExpression::Member(member) => kill_span_expression(&mut member.inner),
+            AccessExpression::Tuple(tuple) => kill_span_expression(&mut tuple.tuple),
+            AccessExpression::AssociatedConstant(_) => {}
+        },
+        Array(array) => array.elements.iter_mut().for_each(kill_span_expression),
+        Binary(binary) => {
+            kill_span_expression(&mut binary.left);
+            kill_span_expression(&mut binary.right);
+        }
+        Call(call) => {
+            kill_span_expression(&mut call.function);
+            call.arguments.iter_mut().for_each(kill_span_expression);
+        }
+        Cast(cast) => kill_span_expression(&mut cast.expression),
+        Struct(struct_) => {
+            for initializer in struct_.members.iter_mut() {
+                initializer.expression.iter_mut().for_each(kill_span_expression);
+            }
+        }
+        Ternary(ternary) => {
+            kill_span_expression(&mut ternary.condition);
+            kill_span_expression(&mut ternary.if_true);
+            kill_span_expression(&mut ternary.if_false);
+        }
+        Tuple(tuple) => tuple.elements.iter_mut().for_each(kill_span_expression),
+        Unary(unary) => kill_span_expression(&mut unary.receiver),
+        Unit(_) | Locator(_) | Identifier(_) | Literal(_) => {}
+        Err(_) => unreachable!("Err expressions should not be present"),
+    }
 }
 
 /// Load all the Leo source files indicated and open the interpreter
