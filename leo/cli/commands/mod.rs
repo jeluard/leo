@@ -26,6 +26,9 @@ pub use build::LeoBuild;
 pub mod clean;
 pub use clean::LeoClean;
 
+pub mod debug;
+pub use debug::LeoDebug;
+
 pub mod deploy;
 pub use deploy::Deploy;
 
@@ -34,9 +37,6 @@ pub use example::LeoExample;
 
 pub mod execute;
 pub use execute::LeoExecute;
-
-pub mod interpret;
-pub use interpret::LeoInterpret;
 
 pub mod query;
 pub use query::LeoQuery;

@@ -27,14 +27,14 @@ use leo_span::Symbol;
 
 use super::*;
 
-/// Interprets an Aleo program.
+/// Debugs an Aleo program through the interpreter.
 #[derive(Parser, Debug)]
-pub struct LeoInterpret {
+pub struct LeoDebug {
     #[clap(flatten)]
     pub(crate) compiler_options: BuildOptions,
 }
 
-impl Command for LeoInterpret {
+impl Command for LeoDebug {
     type Input = <LeoBuild as Command>::Output;
     type Output = ();
 
@@ -50,24 +50,24 @@ impl Command for LeoInterpret {
         // Parse the network.
         let network = NetworkName::try_from(context.get_network(&self.compiler_options.network)?)?;
         match network {
-            NetworkName::TestnetV0 => handle_interpret::<TestnetV0>(&self, context),
+            NetworkName::TestnetV0 => handle_debug::<TestnetV0>(&self, context),
             NetworkName::MainnetV0 => {
                 #[cfg(feature = "only_testnet")]
                 panic!("Mainnet chosen with only_testnet feature");
                 #[cfg(not(feature = "only_testnet"))]
-                return handle_interpret::<MainnetV0>(&self, context);
+                return handle_debug::<MainnetV0>(&self, context);
             }
             NetworkName::CanaryV0 => {
                 #[cfg(feature = "only_testnet")]
                 panic!("Canary chosen with only_testnet feature");
                 #[cfg(not(feature = "only_testnet"))]
-                return handle_interpret::<CanaryV0>(&self, context);
+                return handle_debug::<CanaryV0>(&self, context);
             }
         }
     }
 }
 
-fn handle_interpret<N: Network>(command: &LeoInterpret, context: Context) -> Result<()> {
+fn handle_debug<N: Network>(command: &LeoDebug, context: Context) -> Result<()> {
     // Get the package path.
     let package_path = context.dir()?;
     let home_path = context.home()?;

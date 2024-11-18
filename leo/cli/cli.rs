@@ -82,10 +82,10 @@ enum Commands {
         #[clap(flatten)]
         command: LeoBuild,
     },
-    #[clap(about = "Interpret the current package")]
-    Interpret {
+    #[clap(about = "Debug the current package via the interpreter")]
+    Debug {
         #[clap(flatten)]
-        command: LeoInterpret,
+        command: LeoDebug,
     },
     #[clap(about = "Add a new on-chain or local dependency to the current package.")]
     Add {
@@ -138,7 +138,7 @@ pub fn run_with_args(cli: CLI) -> Result<()> {
         Commands::Account { command } => command.try_execute(context),
         Commands::New { command } => command.try_execute(context),
         Commands::Build { command } => command.try_execute(context),
-        Commands::Interpret { command } => command.try_execute(context),
+        Commands::Debug { command } => command.try_execute(context),
         Commands::Query { command } => command.try_execute(context),
         Commands::Clean { command } => command.try_execute(context),
         Commands::Deploy { command } => command.try_execute(context),
