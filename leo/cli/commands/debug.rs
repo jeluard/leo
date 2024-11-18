@@ -30,6 +30,9 @@ use super::*;
 /// Debugs an Aleo program through the interpreter.
 #[derive(Parser, Debug)]
 pub struct LeoDebug {
+    #[arg(long, help = "The block height, accessible via block.height.", default_value = "0")]
+    pub(crate) block_height: u32,
+
     #[clap(flatten)]
     pub(crate) compiler_options: BuildOptions,
 }
@@ -76,6 +79,10 @@ fn handle_debug<N: Network>(command: &LeoDebug, context: Context) -> Result<()> 
     let manifest = Manifest::read_from_dir(&package_path)?;
     let program_id = ProgramID::<N>::from_str(manifest.program())?;
 
+    // Get the private key.
+    let private_key = context.get_private_key(&None)?;
+    let address = Address::try_from(&private_key)?;
+
     // Retrieve all local dependencies in post order
     let main_sym = Symbol::intern(&program_id.name().to_string());
     let mut retriever = Retriever::<N>::new(
@@ -99,5 +106,5 @@ fn handle_debug<N: Network>(command: &LeoDebug, context: Context) -> Result<()> 
         })
         .collect();
 
-    leo_interpreter::interpret(&paths)
+    leo_interpreter::interpret(&paths, address, command.block_height)
 }

@@ -42,7 +42,7 @@ use std::{
     str::FromStr as _,
 };
 
-type SvmAddress = SvmAddressParam<TestnetV0>;
+pub type SvmAddress = SvmAddressParam<TestnetV0>;
 type SvmBoolean = SvmBooleanParam<TestnetV0>;
 type SvmField = SvmFieldParam<TestnetV0>;
 type SvmGroup = SvmGroupParam<TestnetV0>;

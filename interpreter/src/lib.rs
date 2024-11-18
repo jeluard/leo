@@ -68,8 +68,12 @@ enum InterpreterAction {
 }
 
 impl Interpreter {
-    fn new<'a, P: 'a + AsRef<Path>>(source_files: impl IntoIterator<Item = &'a P>) -> Result<Self> {
-        Self::new_impl(&mut source_files.into_iter().map(|p| p.as_ref()))
+    fn new<'a, P: 'a + AsRef<Path>>(
+        source_files: impl IntoIterator<Item = &'a P>,
+        signer: SvmAddress,
+        block_height: u32,
+    ) -> Result<Self> {
+        Self::new_impl(&mut source_files.into_iter().map(|p| p.as_ref()), signer, block_height)
     }
 
     fn get_ast(path: &Path, handler: &Handler, node_builder: &NodeBuilder) -> Result<Ast> {
@@ -79,11 +83,13 @@ impl Interpreter {
         leo_parser::parse_ast::<TestnetV0>(handler, node_builder, &text, source_file.start_pos)
     }
 
-    fn new_impl(source_files: &mut dyn Iterator<Item = &Path>) -> Result<Self> {
+    fn new_impl(source_files: &mut dyn Iterator<Item = &Path>, signer: SvmAddress, block_height: u32) -> Result<Self> {
         let handler = Handler::default();
         let node_builder = Default::default();
         let mut cursor: Cursor<'_> = Cursor::new(
             true, // really_async
+            signer,
+            block_height,
         );
         let mut filename_to_program = HashMap::new();
         for path in source_files {
@@ -390,8 +396,8 @@ fn kill_span_expression(expression: &mut Expression) {
 
 /// Load all the Leo source files indicated and open the interpreter
 /// to commands from the user.
-pub fn interpret(filenames: &[PathBuf]) -> Result<()> {
-    let mut interpreter = Interpreter::new(filenames.iter())?;
+pub fn interpret(filenames: &[PathBuf], signer: SvmAddress, block_height: u32) -> Result<()> {
+    let mut interpreter = Interpreter::new(filenames.iter(), signer, block_height)?;
     let mut buffer = String::new();
     println!("{}", INSTRUCTIONS);
     loop {

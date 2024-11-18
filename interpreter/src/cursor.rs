@@ -34,7 +34,7 @@ use leo_ast::{
     Variant,
 };
 use leo_errors::{InterpreterHalt, Result};
-use leo_span::{Span, Symbol};
+use leo_span::{Span, Symbol, sym};
 
 use snarkvm::prelude::{
     CastLossy as _,
@@ -42,6 +42,7 @@ use snarkvm::prelude::{
     Inverse as _,
     Network as _,
     Pow as _,
+    ProgramID,
     Square as _,
     SquareRoot as _,
     TestnetV0,
@@ -51,12 +52,13 @@ use snarkvm::prelude::{
 use indexmap::IndexSet;
 use rand::Rng as _;
 use rand_chacha::{ChaCha20Rng, rand_core::SeedableRng};
-use std::{cmp::Ordering, collections::HashMap, fmt, mem};
+use std::{cmp::Ordering, collections::HashMap, fmt, mem, str::FromStr as _};
 
 /// Names associated to values in a function being executed.
 #[derive(Clone, Debug)]
 struct FunctionContext {
     program: Symbol,
+    caller: SvmAddress,
     names: HashMap<Symbol, Value>,
     accumulated_futures: Future,
     is_async: bool,
@@ -74,10 +76,11 @@ impl ContextStack {
         self.current_len
     }
 
-    fn push(&mut self, program: Symbol, is_async: bool) {
+    fn push(&mut self, program: Symbol, caller: SvmAddress, is_async: bool) {
         if self.current_len == self.contexts.len() {
             self.contexts.push(FunctionContext {
                 program,
+                caller,
                 names: HashMap::new(),
                 accumulated_futures: Default::default(),
                 is_async,
@@ -85,6 +88,7 @@ impl ContextStack {
         }
         self.contexts[self.current_len].accumulated_futures.0.clear();
         self.contexts[self.current_len].names.clear();
+        self.contexts[self.current_len].caller = caller;
         self.contexts[self.current_len].program = program;
         self.contexts[self.current_len].is_async = is_async;
         self.current_len += 1;
@@ -223,14 +227,18 @@ pub struct Cursor<'a> {
 
     pub contexts: ContextStack,
 
+    signer: SvmAddress,
+
     rng: ChaCha20Rng,
+
+    block_height: u32,
 
     really_async: bool,
 }
 
 impl<'a> Cursor<'a> {
     /// `really_async` indicates we should really delay execution of async function calls until the user runs them.
-    pub fn new(really_async: bool) -> Self {
+    pub fn new(really_async: bool, signer: SvmAddress, block_height: u32) -> Self {
         Cursor {
             frames: Default::default(),
             values: Default::default(),
@@ -241,6 +249,8 @@ impl<'a> Cursor<'a> {
             contexts: Default::default(),
             futures: Default::default(),
             rng: ChaCha20Rng::from_entropy(),
+            signer,
+            block_height,
             really_async,
         }
     }
@@ -582,6 +592,40 @@ impl<'a> Cursor<'a> {
                     CoreConstant::GroupGenerator => Some(Value::generator()),
                 }
             }
+            Expression::Access(AccessExpression::Member(access)) => match &*access.inner {
+                Expression::Identifier(identifier) if identifier.name == sym::SelfLower => match access.name.name {
+                    sym::signer => Some(Value::Address(self.signer)),
+                    sym::caller => {
+                        if let Some(function_context) = self.contexts.last() {
+                            Some(Value::Address(function_context.caller))
+                        } else {
+                            Some(Value::Address(self.signer))
+                        }
+                    }
+                    _ => halt!(access.span(), "unknown member of self"),
+                },
+                Expression::Identifier(identifier) if identifier.name == sym::block => match access.name.name {
+                    sym::height => Some(Value::U32(self.block_height)),
+                    _ => halt!(access.span(), "unknown member of block"),
+                },
+
+                // Otherwise, we just have a normal struct member access.
+                _ if step == 0 => {
+                    push!()(&*access.inner);
+                    None
+                }
+                _ if step == 1 => {
+                    let Some(Value::Struct(struct_)) = self.values.pop() else {
+                        tc_fail!();
+                    };
+                    let value = struct_.contents.get(&access.name.name).cloned();
+                    if value.is_none() {
+                        tc_fail!();
+                    }
+                    value
+                }
+                _ => unreachable!("we've actually covered all possible patterns above"),
+            },
             Expression::Access(AccessExpression::AssociatedFunction(function)) if step == 0 => {
                 let Some(core_function) = CoreFunction::from_symbols(function.variant.name, function.name.name) else {
                     tc_fail!();
@@ -1704,7 +1748,18 @@ impl<'a> Cursor<'a> {
                     self.values.push(Value::Future(Future(vec![async_ex])));
                 } else {
                     let is_async = function.variant == Variant::AsyncFunction;
-                    self.contexts.push(program, is_async);
+                    let caller = if matches!(function.variant, Variant::Transition | Variant::AsyncTransition) {
+                        if let Some(function_context) = self.contexts.last() {
+                            let program_id = ProgramID::<TestnetV0>::from_str(&format!("{}", function_context.program))
+                                .expect("should be able to create ProgramID");
+                            program_id.to_address().expect("should be able to convert to address")
+                        } else {
+                            self.signer
+                        }
+                    } else {
+                        self.signer
+                    };
+                    self.contexts.push(program, caller, is_async);
                     let param_names = function.input.iter().map(|input| input.identifier.name);
                     for (name, value) in param_names.zip(values_iter) {
                         self.contexts.set(name, value);
@@ -1874,6 +1929,7 @@ impl<'a> Cursor<'a> {
                 let values_iter = self.values.drain(len - function.input.len()..);
                 self.contexts.push(
                     gid.program,
+                    self.signer,
                     true, // is_async
                 );
                 let param_names = function.input.iter().map(|input| input.identifier.name);
